@@ -1,20 +1,35 @@
-import type { ILivechatDepartment, ILivechatInquiryRecord, IOmnichannelAgent } from '@rocket.chat/core-typings';
+import { OmnichannelSortingMechanismSettingType, LivechatInquiryStatus } from '@rocket.chat/core-typings';
+import type {
+	IRoom,
+	IOmnichannelAgent,
+	ILivechatInquiryRecord,
+	ILivechatDepartment,
+	OmichannelRoutingConfig,
+} from '@rocket.chat/core-typings';
+import { useSetting, useStream, useUserId } from '@rocket.chat/ui-contexts';
+import { Mongo } from 'meteor/mongo';
+import { useEffect, useMemo, useCallback, useRef } from 'react';
 
-import { queryClient } from '../../../../../client/lib/queryClient';
-import { callWithErrorHandling } from '../../../../../client/lib/utils/callWithErrorHandling';
-import { settings } from '../../../../settings/client';
-import { sdk } from '../../../../utils/client/lib/SDKClient';
-import { LivechatInquiry } from '../../collections/LivechatInquiry';
+import { useOmnichannelContinuousSoundNotification } from './useOmnichannelContinuousSoundNotification';
+import { useRoutingConfigQuery } from './useRoutingConfigQuery';
+import { getOmniChatSortQuery } from '../../../app/livechat/lib/inquiries';
+import { settings } from '../../../app/settings/client';
+import { KonchatNotification } from '../../../app/ui/client/lib/KonchatNotification';
+import { sdk } from '../../../app/utils/client/lib/SDKClient';
+import { useReactiveValue } from '../../hooks/useReactiveValue';
+import { queryClient } from '../../lib/queryClient';
 
-const departments = new Set();
+const LivechatInquiry = new Mongo.Collection<ILivechatInquiryRecord>(null);
+
+const departments = new Set<ILivechatDepartment['_id']>();
 
 const events = {
 	added: async (inquiry: ILivechatInquiryRecord) => {
-		if (!departments.has(inquiry.department)) {
+		if (!inquiry.department || !departments.has(inquiry.department)) {
 			return;
 		}
 
-		LivechatInquiry.insert({ ...inquiry, alert: true, _updatedAt: new Date(inquiry._updatedAt) });
+		LivechatInquiry.insert({ ...inquiry, _updatedAt: new Date(inquiry._updatedAt) });
 		await invalidateRoomQueries(inquiry.rid);
 	},
 	changed: async (inquiry: ILivechatInquiryRecord) => {
@@ -53,12 +68,6 @@ const removeInquiry = async (inquiry: ILivechatInquiryRecord) => {
 	return queryClient.invalidateQueries({ queryKey: ['rooms', { reference: inquiry.rid, type: 'l' }] });
 };
 
-const getInquiriesFromAPI = async () => {
-	const count = settings.get('Livechat_guest_pool_max_number_incoming_livechats_displayed') ?? 0;
-	const { inquiries } = await sdk.rest.get('/v1/livechat/inquiries.queuedForUser', { count });
-	return inquiries;
-};
-
 const removeListenerOfDepartment = (departmentId: ILivechatDepartment['_id']) => {
 	sdk.stop('livechat-inquiry-queue-observer', `department/${departmentId}`);
 	departments.delete(departmentId);
@@ -76,9 +85,6 @@ const addListenerForeachDepartment = (departments: ILivechatDepartment['_id'][] 
 	return () => cleanupFunctions.forEach((cleanup) => cleanup());
 };
 
-const updateInquiries = async (inquiries: ILivechatInquiryRecord[] = []) =>
-	inquiries.forEach((inquiry) => LivechatInquiry.upsert({ _id: inquiry._id }, { ...inquiry, _updatedAt: new Date(inquiry._updatedAt) }));
-
 const getAgentsDepartments = async (userId: IOmnichannelAgent['_id']) => {
 	const { departments } = await sdk.rest.get(`/v1/livechat/agents/${userId}/departments`, { enabledDepartmentsOnly: 'true' });
 	return departments;
@@ -90,6 +96,7 @@ const addGlobalListener = () => {
 	sdk.stream('livechat-inquiry-queue-observer', ['public'], async (args) => {
 		await processInquiryEvent(args);
 	});
+
 	return removeGlobalListener;
 };
 
@@ -104,9 +111,8 @@ const addAgentListener = (userId: IOmnichannelAgent['_id']) => {
 	return () => removeAgentListener(userId);
 };
 
-const subscribe = async (userId: IOmnichannelAgent['_id']) => {
-	const config = await callWithErrorHandling('livechat:getRoutingConfig');
-	if (config?.autoAssignAgent) {
+const subscribe = async (userId: IOmnichannelAgent['_id'], routingConfig: OmichannelRoutingConfig | undefined) => {
+	if (routingConfig?.autoAssignAgent) {
 		return;
 	}
 
@@ -118,9 +124,10 @@ const subscribe = async (userId: IOmnichannelAgent['_id']) => {
 	const globalCleanup = addGlobalListener();
 
 	const computation = Tracker.autorun(async () => {
-		const inquiriesFromAPI = (await getInquiriesFromAPI()) as unknown as ILivechatInquiryRecord[];
+		const count = settings.get('Livechat_guest_pool_max_number_incoming_livechats_displayed') ?? 0;
+		const { inquiries } = await sdk.rest.get('/v1/livechat/inquiries.queuedForUser', { count });
 
-		await updateInquiries(inquiriesFromAPI);
+		inquiries.forEach((inquiry) => LivechatInquiry.upsert({ _id: inquiry._id }, { ...inquiry, _updatedAt: new Date(inquiry._updatedAt) }));
 	});
 
 	return () => {
@@ -134,7 +141,7 @@ const subscribe = async (userId: IOmnichannelAgent['_id']) => {
 	};
 };
 
-export const initializeLivechatInquiryStream = (() => {
+const initializeLivechatInquiryStream = (() => {
 	let cleanUp: (() => void) | undefined;
 
 	return async (...args: Parameters<typeof subscribe>) => {
@@ -142,3 +149,68 @@ export const initializeLivechatInquiryStream = (() => {
 		cleanUp = await subscribe(...args);
 	};
 })();
+
+export const useLivechatInquiries = ({ manuallySelected }: { manuallySelected: boolean }) => {
+	const uid = useUserId();
+
+	const { data: routingConfig } = useRoutingConfigQuery();
+
+	const subscribeToNotifyUser = useStream('notify-user');
+
+	useEffect(() => {
+		if (!manuallySelected || !uid) return;
+
+		initializeLivechatInquiryStream(uid, routingConfig);
+
+		return subscribeToNotifyUser(`${uid}/departmentAgentData`, () => {
+			initializeLivechatInquiryStream(uid, routingConfig);
+		});
+	}, [manuallySelected, subscribeToNotifyUser, uid, routingConfig]);
+
+	const omnichannelPoolMaxIncoming = useSetting('Livechat_guest_pool_max_number_incoming_livechats_displayed', 0);
+	const omnichannelSortingMechanism = useSetting<OmnichannelSortingMechanismSettingType>(
+		'Omnichannel_sorting_mechanism',
+		OmnichannelSortingMechanismSettingType.Timestamp,
+	);
+
+	const queue = useReactiveValue<ILivechatInquiryRecord[] | undefined>(
+		useCallback(() => {
+			if (!manuallySelected) {
+				return undefined;
+			}
+
+			return LivechatInquiry.find(
+				{ status: LivechatInquiryStatus.QUEUED },
+				{
+					sort: getOmniChatSortQuery(omnichannelSortingMechanism),
+					limit: omnichannelPoolMaxIncoming,
+				},
+			).fetch();
+		}, [manuallySelected, omnichannelPoolMaxIncoming, omnichannelSortingMechanism]),
+	);
+
+	const lastQueueSize = useRef(0);
+
+	useEffect(() => {
+		if (lastQueueSize.current < (queue?.length ?? 0)) {
+			KonchatNotification.newRoom();
+		}
+		lastQueueSize.current = queue?.length ?? 0;
+	}, [queue?.length]);
+
+	useOmnichannelContinuousSoundNotification(queue ?? []);
+
+	return useMemo(() => {
+		if (!queue) {
+			return { enabled: false } as const;
+		}
+
+		return {
+			enabled: true,
+			queue,
+			discardInquiry: (rid: IRoom['_id']) => {
+				LivechatInquiry.remove({ rid });
+			},
+		} as const;
+	}, [queue]);
+};

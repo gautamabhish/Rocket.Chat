@@ -1,5 +1,17 @@
-import type { OmichannelRoutingConfig, Inquiries, ILivechatPriority, Serialized } from '@rocket.chat/core-typings';
+import type { OmichannelRoutingConfig, ILivechatPriority, Serialized, IRoom, ILivechatInquiryRecord } from '@rocket.chat/core-typings';
 import { createContext } from 'react';
+
+type Inquiries =
+	| {
+			enabled: true;
+			queue: Array<ILivechatInquiryRecord>;
+			discardInquiry: (rid: IRoom['_id']) => void;
+	  }
+	| {
+			enabled: false;
+			queue?: undefined;
+			discardInquiry?: undefined;
+	  };
 
 export type OmnichannelContextValue = {
 	inquiries: Inquiries;

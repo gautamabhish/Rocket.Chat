@@ -1,5 +1,3 @@
-import type { ILivechatInquiryRecord } from './IInquiry';
-
 export type OmichannelRoutingConfig = {
 	previewRoom: boolean;
 	showConnecting: boolean;
@@ -9,12 +7,3 @@ export type OmichannelRoutingConfig = {
 	enableTriggerAction: boolean;
 	autoAssignAgent: boolean;
 };
-
-export type Inquiries =
-	| {
-			enabled: true;
-			queue: Array<ILivechatInquiryRecord>;
-	  }
-	| {
-			enabled: false;
-	  };

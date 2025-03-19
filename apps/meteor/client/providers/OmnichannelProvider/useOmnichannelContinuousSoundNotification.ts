@@ -2,11 +2,12 @@ import type { ICustomSound } from '@rocket.chat/core-typings';
 import { useSetting, useUserPreference, useUserSubscriptions } from '@rocket.chat/ui-contexts';
 import { useEffect } from 'react';
 
-import { useUserSoundPreferences } from './useUserSoundPreferences';
-import { CustomSounds } from '../../app/custom-sounds/client/lib/CustomSounds';
+import { CustomSounds } from '../../../app/custom-sounds/client/lib/CustomSounds';
+import { useUserSoundPreferences } from '../../hooks/useUserSoundPreferences';
 
 const query = { t: 'l', ls: { $exists: false }, open: true };
-export const useOmnichannelContinuousSoundNotification = <T>(queue: T[]) => {
+
+export const useOmnichannelContinuousSoundNotification = (queue: unknown[]) => {
 	const userSubscriptions = useUserSubscriptions(query);
 
 	const playNewRoomSoundContinuously = useSetting('Livechat_continuous_sound_notification_new_livechat_room');

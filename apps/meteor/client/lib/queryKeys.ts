@@ -24,3 +24,8 @@ export const rolesQueryKeys = {
 	all: ['roles'] as const,
 	userRoles: () => [...rolesQueryKeys.all, 'user-roles'] as const,
 };
+
+export const omnichannelQueryKeys = {
+	all: ['omnichannel'] as const,
+	routingConfig: () => [...omnichannelQueryKeys.all, 'routing-config'] as const,
+};
